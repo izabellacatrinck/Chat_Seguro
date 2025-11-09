@@ -7,6 +7,8 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+print("[generate_cert.py] Iniciando geração de par de chaves e certificado...")
+
 # === Gerar chave privada RSA ===
 key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 key_bytes = key.private_bytes(
@@ -15,6 +17,7 @@ key_bytes = key.private_bytes(
     encryption_algorithm=serialization.NoEncryption(),
 )
 pathlib.Path("key.pem").write_bytes(key_bytes)
+print("[generate_cert.py] Chave privada RSA(2048) gerada e salva em key.pem")
 
 # === Criar certificado autoassinado ===
 subject = issuer = x509.Name([
@@ -25,6 +28,7 @@ subject = issuer = x509.Name([
     x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
 ])
 
+print("[generate_cert.py] Construindo certificado; algoritmo de assinatura: RSA + SHA-256 (hash)")
 cert = (
     x509.CertificateBuilder()
     .subject_name(subject)
@@ -34,12 +38,12 @@ cert = (
     .not_valid_before(datetime.utcnow())
     .not_valid_after(datetime.utcnow() + timedelta(days=365))
     .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
-    .sign(key, hashes.SHA256())
+    .sign(key, hashes.SHA256())  # <-- Hash SHA-256 utilizado na assinatura
 )
 
 cert_bytes = cert.public_bytes(serialization.Encoding.PEM)
 pathlib.Path("cert.pem").write_bytes(cert_bytes)
 
 print("✅ Arquivos gerados com sucesso:")
-print(" - cert.pem (certificado público)")
+print(" - cert.pem (certificado público, assinado com SHA-256)")
 print(" - key.pem  (chave privada do servidor)")

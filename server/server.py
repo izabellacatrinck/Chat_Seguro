@@ -4,8 +4,19 @@ import builtins
 import contextlib
 import json
 import ssl
+import logging
 from argparse import ArgumentParser
 from pathlib import Path
+
+# -------------------------------------------------------------------
+# Logging
+# -------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("chatseguro.server")
 
 PUBKEYS_FILE = Path("pubkeys.json")
 PUBLIC_KEYS = {}  # client_id -> base64 pubkey
@@ -17,18 +28,25 @@ GROUPS = {}  # group_id -> { "members": [client_id], "admin": client_id }
 # --- Inicialização do JSON ---
 def init_pubkeys():
     global PUBLIC_KEYS
+    log.info("=" * 70)
+    log.info("[server.py][INIT] Inicializando servidor de chat seguro")
+    log.info("  └─ Arquivo: server.py | Função: init_pubkeys()")
+
     if PUBKEYS_FILE.exists():
         with PUBKEYS_FILE.open("r") as f:
             try:
                 PUBLIC_KEYS = json.load(f)
+                log.info("  └─ ✅ pubkeys.json carregado (%d chaves públicas)", len(PUBLIC_KEYS))
             except Exception as e:
-                print("erro ao ler pubkeys.json, criando novo:", e)
+                log.error("  └─ ❌ Erro ao ler pubkeys.json: %s", e)
                 PUBLIC_KEYS = {}
     else:
         PUBLIC_KEYS = {}
         with PUBKEYS_FILE.open("w") as f:
             json.dump(PUBLIC_KEYS, f, indent=2)
-        print("✅ Arquivo pubkeys.json criado vazio.")
+        log.info("  └─ ✅ pubkeys.json criado (vazio)")
+
+    log.info("=" * 70)
 
 
 # --- Atualiza JSON ao receber nova chave ---
@@ -37,10 +55,18 @@ def store_pubkey(client_id, pubkey_b64):
     PUBLIC_KEYS[client_id] = pubkey_b64
     with PUBKEYS_FILE.open("w") as f:
         json.dump(PUBLIC_KEYS, f, indent=2)
-    print(f"[+] Nova chave pública recebida de {client_id}: {pubkey_b64}")
+
+    log.info("")
+    log.info("[server.py][PUBKEY_STORE] Chave pública recebida e armazenada")
+    log.info("  └─ Arquivo: server.py | Função: store_pubkey()")
+    log.info("  └─ Cliente: %s", client_id)
+    log.info("  └─ Tamanho da chave (base64): %d caracteres", len(pubkey_b64))
+    log.info("  └─ Algoritmo: X25519 (Curve25519 para ECDH)")
+    log.info("  └─ Uso: Estabelecer canal criptografado via NaCl Box")
+    log.info("  └─  Persistido em: pubkeys.json")
 
 
-# --- Funções auxiliares ---
+# --- Respostas ---
 async def send_ok(writer, payload):
     obj = {"status": "ok", **payload}
     writer.write((json.dumps(obj) + "\n").encode())
@@ -57,6 +83,12 @@ async def send_error(writer, reason):
 async def handle_reader(reader, writer):
     addr = writer.get_extra_info("peername")
     client_id = None
+    log.info("")
+    log.info("[server.py][TLS] Nova conexão TLS estabelecida")
+    log.info("  └─ Arquivo: server.py | Função: handle_reader()")
+    log.info("  └─ Endereço remoto: %s", addr)
+    log.info("  └─ Protocolo: TLS (Transport Layer Security)")
+
     try:
         while True:
             line = await reader.readline()
@@ -80,7 +112,7 @@ async def handle_reader(reader, writer):
                 store_pubkey(cid, pub)
 
                 if cid not in ACTIVE_CLIENTS:
-                    print(f"[+] Novo cliente registrado: {cid} ({addr})")
+                    log.info("[server.py][LOGIN] Cliente conectado: %s", cid)
                     ACTIVE_CLIENTS[cid] = {"reader": reader, "writer": writer}
 
                 client_id = cid
@@ -93,11 +125,15 @@ async def handle_reader(reader, writer):
                     continue
 
                 pub = PUBLIC_KEYS.get(cid)
-
                 if not pub:
                     await send_error(writer, "não encontrado")
                 else:
-                    print(f"[INFO] Enviando chave pública de {cid}")
+                    log.info("")
+                    log.info("[server.py][PUBKEY_FETCH] Chave pública solicitada")
+                    log.info("  └─ Arquivo: server.py | Função: handle_reader() | Comando: get_key")
+                    log.info("  └─ Cliente solicitado: %s", cid)
+                    log.info("  └─ Tamanho (base64): %d caracteres", len(pub))
+                    log.info("  └─ ✅ Chave enviada ao solicitante")
                     await send_ok(writer, {"client_id": cid, "pubkey": pub})
 
             elif mtype == "send_blob":
@@ -108,14 +144,19 @@ async def handle_reader(reader, writer):
                 if not to or not frm or not blob:
                     await send_error(writer, "send_blob requer to, from e blob")
                     continue
-                BLOBS.setdefault(to, []).append(
-                    {"from": frm, "blob": blob, "meta": meta}
-                )
+                BLOBS.setdefault(to, []).append({"from": frm, "blob": blob, "meta": meta})
 
-                # log do transporte da mensagem cifrada
-                print(
-                    f"[TRANSPORTE] Mensagem cifrada recebida de {frm} -> {to}: {blob}"
-                )
+                log.info("")
+                log.info("[server.py][TRANSPORTE][MSG_PRIVADA] Mensagem criptografada em trânsito")
+                log.info("  └─ Arquivo: server.py | Função: handle_reader() | Comando: send_blob")
+                log.info("  └─ Remetente: %s", frm)
+                log.info("  └─ Destinatário: %s", to)
+                log.info("  └─ Tamanho do blob (base64): %d caracteres", len(blob))
+                log.info("  └─ ⚠️  IMPORTANTE: Servidor NÃO decripta. Apenas transporta!")
+                log.info("  └─ Criptografia aplicada: NaCl Box (X25519 + XSalsa20-Poly1305)")
+                log.info("  └─ Autenticação: Poly1305 MAC (16 bytes)")
+                log.info("  └─ A descriptografia ocorre no cliente destino")
+
                 await send_ok(writer, {"message": "stored"})
 
             elif mtype == "create_group":
@@ -123,18 +164,22 @@ async def handle_reader(reader, writer):
                 members = msg.get("members")
                 admin = msg.get("admin")
                 if not group_id or not members or not admin:
-                    await send_error(
-                        writer, "create_group requer group_id, members e admin"
-                    )
+                    await send_error(writer, "create_group requer group_id, members e admin")
                     continue
                 if group_id in GROUPS:
                     await send_error(writer, "grupo já existe")
                     continue
 
                 GROUPS[group_id] = {"members": members, "admin": admin}
-                print(
-                    f"[GRUPO] Novo grupo criado: {group_id} por {admin} com membros {members}"
-                )
+
+                log.info("")
+                log.info("[server.py][GRUPO][CREATE] Novo grupo criado")
+                log.info("  └─ Arquivo: server.py | Função: handle_reader() | Comando: create_group")
+                log.info("  └─ ID do grupo: %s", group_id)
+                log.info("  └─ Administrador: %s", admin)
+                log.info("  └─ Membros: %s", ", ".join(members))
+                log.info("  └─ Total de membros: %d", len(members))
+
                 await send_ok(writer, {"message": "group created"})
 
             elif mtype == "send_group_blob":
@@ -142,9 +187,7 @@ async def handle_reader(reader, writer):
                 frm = msg.get("from")
                 blob = msg.get("blob")
                 if not group_id or not frm or not blob:
-                    await send_error(
-                        writer, "send_group_blob requer group_id, from e blob"
-                    )
+                    await send_error(writer, "send_group_blob requer group_id, from e blob")
                     continue
                 if group_id not in GROUPS:
                     await send_error(writer, "grupo não encontrado")
@@ -155,22 +198,24 @@ async def handle_reader(reader, writer):
                     await send_error(writer, "você não é membro deste grupo")
                     continue
 
-                print(
-                    f"[GRUPO TRANSPORTE] Mensagem recebida de {frm} para o grupo {group_id}"
-                )
+                log.info("")
+                log.info("[server.py][TRANSPORTE][MSG_GRUPO] Mensagem de grupo em trânsito")
+                log.info("  └─ Arquivo: server.py | Função: handle_reader() | Comando: send_group_blob")
+                log.info("  └─ Remetente: %s", frm)
+                log.info("  └─ Grupo: %s", group_id)
+                log.info("  └─ Tamanho do blob (base64): %d caracteres", len(blob))
+                log.info("  └─ Destinatários: %d membros", len(group["members"]) - 1)
+                log.info("  └─ ⚠️  IMPORTANTE: Servidor NÃO decripta. Apenas distribui!")
+                log.info("  └─ Criptografia aplicada: NaCl SecretBox (XSalsa20-Poly1305)")
+                log.info("  └─ Chave simétrica: Compartilhada entre membros do grupo")
+                log.info("  └─ Autenticação: Poly1305 MAC (16 bytes)")
 
-                # distribuir a mensagem para todos os outros membros do grupo
+                # distribuir a mensagem para os outros membros
                 for member in group["members"]:
                     if member != frm:
                         BLOBS.setdefault(member, []).append(
-                            {
-                                "from": frm,
-                                "blob": blob,
-                                "group_id": group_id,
-                                "type": "group",
-                            }
+                            {"from": frm, "blob": blob, "group_id": group_id, "type": "group"}
                         )
-                # enviar confirmação de que a mensagem foi armazenada para o grupo
                 await send_ok(writer, {"message": "stored for group"})
 
             elif mtype == "fetch_blobs":
@@ -179,19 +224,27 @@ async def handle_reader(reader, writer):
                     await send_error(writer, "fetch_blobs requer client_id")
                     continue
                 items = BLOBS.pop(cid, [])
+
+                if items:
+                    log.info("")
+                    log.info("[server.py][FETCH] Mensagens pendentes entregues")
+                    log.info("  └─ Arquivo: server.py | Função: handle_reader() | Comando: fetch_blobs")
+                    log.info("  └─ Cliente: %s", cid)
+                    log.info("  └─ Quantidade de mensagens: %d", len(items))
+
                 await send_ok(writer, {"messages": items})
 
             elif mtype == "list_all":
                 requester = msg.get("client_id")
                 clients = [c for c in PUBLIC_KEYS if c != requester]
-                await send_ok(writer, {"clients": clients})
+                groups = list(GROUPS.keys())
+                await send_ok(writer, {"clients": clients, "groups": groups})
 
-            # --- NOVO: desconexão explícita ---
             elif mtype == "disconnect":
                 cid = msg.get("client_id")
                 if cid and cid in ACTIVE_CLIENTS:
                     del ACTIVE_CLIENTS[cid]
-                    print(f"[+] Cliente desconectado: {cid}")
+                    log.info("[server.py][LOGOUT] Cliente desconectado: %s", cid)
                 await send_ok(writer, {"message": "disconnected"})
                 break
 
@@ -199,7 +252,7 @@ async def handle_reader(reader, writer):
                 await send_error(writer, "unknown_type")
 
     except Exception as e:
-        print(f"[ERRO] Conexão com {client_id or addr} caiu: {e}")
+        log.error("[server.py][ERRO] Conexão encerrada com erro: %s", e)
     finally:
         writer.close()
         with contextlib.suppress(builtins.BaseException):
@@ -208,11 +261,29 @@ async def handle_reader(reader, writer):
 
 # --- Main ---
 async def main(certfile, keyfile, host="0.0.0.0", port=4433):
+    log.info("")
+    log.info("[server.py][SSL/TLS] Configurando contexto SSL/TLS")
+    log.info("  └─ Arquivo: server.py | Função: main()")
+    log.info("  └─ Certificado: %s", certfile)
+    log.info("  └─ Chave privada: %s", keyfile)
+    log.info("  └─ Protocolo: TLS (Transport Layer Security)")
+
     sslctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     sslctx.load_cert_chain(certfile, keyfile)
+
     server = await asyncio.start_server(handle_reader, host, port, ssl=sslctx)
     addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets)
-    print(f"Servidor rodando em {addrs}")
+
+    log.info("")
+    log.info("=" * 70)
+    log.info(" SERVIDOR RODANDO")
+    log.info("=" * 70)
+    log.info("   Endereço: %s", addrs)
+    log.info("   TLS: ATIVO")
+    log.info("   Aguardando conexões...")
+    log.info("=" * 70)
+    log.info("")
+
     async with server:
         await server.serve_forever()
 
@@ -228,4 +299,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main(args.certfile, args.keyfile, args.host, args.port))
     except KeyboardInterrupt:
-        print("Shutting down...")
+        log.info("\n[server.py] Servidor encerrado pelo usuário")
