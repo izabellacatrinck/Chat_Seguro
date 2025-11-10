@@ -6,18 +6,128 @@ import ssl
 import time
 from pathlib import Path
 
-from nacl.public import Box, PrivateKey, PublicKey
+from nacl.public import PrivateKey, PublicKey
 from nacl.secret import SecretBox
+from nacl import bindings as nb  # acesso às primitivas de baixo nível (libsodium)
 
+# =========================================
+# Utils
+# =========================================
+DEBUG_CRYPTO = True  # coloque False em produção
 
 def b64(x: bytes) -> str:
     return base64.b64encode(x).decode()
 
-
 def ub64(s: str) -> bytes:
     return base64.b64decode(s.encode())
 
+def hex_preview(b: bytes, n=32):
+    h = b.hex()
+    return h if len(h) <= 2*n else h[:2*n] + "..."
 
+def log(msg: str):
+    if DEBUG_CRYPTO:
+        print(msg)
+
+# =========================================
+# DebugBox: wrapper de Box com logs detalhados
+# =========================================
+class DebugBox:
+    """
+    Wrapper compatível com o uso existente, mas expondo logs detalhados:
+      - shared key (32B) derivada por X25519 (crypto_box_beforenm)
+      - nonce (24B), MAC (16B) e tamanhos na cifragem
+      - verificações e split (nonce||ciphertext) na decifragem
+    Retorna/consome sempre bytes no formato: nonce || ciphertext
+    """
+    NONCE_SIZE = nb.crypto_box_NONCEBYTES          # 24
+    MAC_SIZE   = 16
+    KEY_SIZE   = 32
+
+    def __init__(self, private_key: PrivateKey, public_key: PublicKey, label: str = ""):
+        if not isinstance(private_key, PrivateKey) or not isinstance(public_key, PublicKey):
+            raise TypeError("DebugBox requer PrivateKey e PublicKey")
+        self._priv = private_key
+        self._pub  = public_key
+        self._label = label or "Box"
+
+        # Deriva a shared key (K) via X25519 (Curve25519) + preparação p/ XSalsa20-Poly1305
+        self._shared_key = nb.crypto_box_beforenm(bytes(public_key), bytes(private_key))
+        if len(self._shared_key) != self.KEY_SIZE:
+            raise RuntimeError("shared key inesperada")
+
+        # LOGS de inicialização
+        log("\n" + "="*70)
+        log(f"[DEBUG/Box:init] {self._label}")
+        log(f"  • pub(peer): {hex_preview(bytes(public_key), 32)}")
+        log(f"  • priv(self): {hex_preview(bytes(private_key), 32)}")
+        log(f"  • shared_key(32B): {self._shared_key.hex()}")
+        log("="*70)
+
+    def shared_key(self) -> bytes:
+        return self._shared_key
+
+    def encrypt(self, plaintext: bytes, nonce: bytes | None = None) -> bytes:
+        if nonce is None:
+            nonce = os.urandom(self.NONCE_SIZE)
+        if len(nonce) != self.NONCE_SIZE:
+            raise ValueError("nonce inválido (esperado 24 bytes)")
+
+        log("\n" + "-"*70)
+        log(f"[DEBUG/Box:encrypt] {self._label}")
+        log(f"  • nonce(24B): {nonce.hex()}")
+        log(f"  • plaintext({len(plaintext)}B): {repr(plaintext)[:120]}")
+
+        # crypto_box_easy_afternm => ciphertext = MAC(16B) || CIPHERTEXT(mlen)
+        ct = nb.crypto_box_easy_afternm(plaintext, nonce, self._shared_key)
+        if len(ct) < self.MAC_SIZE:
+            raise RuntimeError("ciphertext muito curto")
+
+        mac  = ct[:self.MAC_SIZE]
+        body = ct[self.MAC_SIZE:]
+        log(f"  • MAC(16B): {mac.hex()}")
+        log(f"  • ctext({len(body)}B): {body.hex()[:96]}{'...' if len(body)>48 else ''}")
+        log(f"  • total ciphertext({len(ct)}B) = 16 + {len(body)}")
+        log("-"*70)
+
+        # Compatível com o restante do app: retornamos bytes = nonce || ct
+        return nonce + ct
+
+    def decrypt(self, combined: bytes, nonce: bytes | None = None) -> bytes:
+        # Aceita tanto (nonce||ct) quanto (ct, nonce explícito)
+        if nonce is None:
+            if len(combined) < self.NONCE_SIZE + self.MAC_SIZE:
+                raise ValueError("blob muito curto para (nonce||ciphertext)")
+            nonce = combined[:self.NONCE_SIZE]
+            ct    = combined[self.NONCE_SIZE:]
+        else:
+            ct = combined
+
+        if len(nonce) != self.NONCE_SIZE:
+            raise ValueError("nonce inválido (esperado 24 bytes)")
+
+        log("\n" + "-"*70)
+        log(f"[DEBUG/Box:decrypt] {self._label}")
+        log(f"  • nonce(24B): {nonce.hex()}")
+        if len(ct) < self.MAC_SIZE:
+            raise ValueError("ciphertext sem MAC")
+        mac  = ct[:self.MAC_SIZE]
+        body = ct[self.MAC_SIZE:]
+        log(f"  • MAC(16B): {mac.hex()}")
+        log(f"  • ctext({len(body)}B): {body.hex()[:96]}{'...' if len(body)>48 else ''}")
+
+        # Verifica MAC e decifra
+        pt = nb.crypto_box_open_easy_afternm(ct, nonce, self._shared_key)
+        log(f"  • plaintext({len(pt)}B): {repr(pt)[:120]}")
+        log(f"[DEBUG/Box:decrypt] OK")
+        log("-"*70)
+
+        return pt
+
+
+# =========================================
+# TLS client
+# =========================================
 class TLSSocketClient:
     def __init__(self, host, port, cafile=None):
         self.host = host
@@ -48,6 +158,9 @@ class TLSSocketClient:
             return {"status": "error", "reason": f"Erro de conexão: {e}"}
 
 
+# =========================================
+# Chat logic
+# =========================================
 class ChatLogic:
     def __init__(self, server_host, server_port, cacert, client_id):
         self.client_id = client_id
@@ -132,14 +245,15 @@ class ChatLogic:
                 continue
 
             peer_pub = PublicKey(ub64(resp["pubkey"]))
-            box = Box(self.priv, peer_pub)
-            key_blob = box.encrypt(group_key)
+            # >>> Troca: Box -> DebugBox
+            box = DebugBox(self.priv, peer_pub, label=f"{self.client_id} → {member} (grp-key)")
+            key_blob = box.encrypt(group_key)   # retorna bytes (nonce||ct)
 
             envelope = {
                 "type": "group_key_distribution",
                 "group_id": group_id,
                 "sender_pub": b64(self.pub),
-                "key_blob": b64(key_blob),
+                "key_blob": b64(key_blob),       # já é bytes, ok
             }
             payload = {
                 "type": "send_blob",
@@ -162,9 +276,10 @@ class ChatLogic:
         if resp.get("status") != "ok":
             return False, f"Não foi possível obter a chave de {peer}"
         peer_pub = PublicKey(ub64(resp["pubkey"]))
-        box = Box(self.priv, peer_pub)
+        # >>> Troca: Box -> DebugBox
+        box = DebugBox(self.priv, peer_pub, label=f"{self.client_id} → {peer}")
 
-        cipher = box.encrypt(text.encode())
+        cipher = box.encrypt(text.encode())  # bytes = nonce||ct
         envelope = {"sender_pub": b64(self.pub), "blob": b64(cipher)}
         payload = {
             "type": "send_blob",
@@ -193,7 +308,7 @@ class ChatLogic:
             "type": "send_group_blob",
             "group_id": group_id,
             "from": self.client_id,
-            "blob": b64(cipher),
+            "blob": b64(cipher),  # SecretBox.EncryptedMessage já é bytes-like
         }
         await self.client.send_recv(payload)
         return True, ""
@@ -209,85 +324,61 @@ class ChatLogic:
                     for m in response.get("messages", []):
                         ts = time.strftime("%H:%M:%S")
 
-                        # **LÓGICA CORRIGIDA AQUI**
-                        # Verifica primeiro se é uma mensagem de grupo, pois o seu blob não é JSON.
+                        # 1) Mensagens de grupo (blob binário SecretBox)
                         if m.get("type") == "group":
                             group_id = m["group_id"]
-                            if group_id in self.conversations and self.conversations[
-                                group_id
-                            ].get("key"):
-                                group_box = SecretBox(
-                                    self.conversations[group_id]["key"]
-                                )
+                            if group_id in self.conversations and self.conversations[group_id].get("key"):
+                                group_box = SecretBox(self.conversations[group_id]["key"])
                                 try:
                                     pt = group_box.decrypt(ub64(m["blob"])).decode()
-                                    self.conversations[group_id]["history"].append(
-                                        (ts, m["from"], pt)
-                                    )
+                                    self.conversations[group_id]["history"].append((ts, m["from"], pt))
                                     if self.on_new_message:
-                                        self.on_new_message(
-                                            group_id, f"[{ts}] {m['from']}: {pt}"
-                                        )
+                                        self.on_new_message(group_id, f"[{ts}] {m['from']}: {pt}")
                                 except Exception as e:
                                     print(f"Erro ao descriptografar msg de grupo: {e}")
-                            continue  # Processou a mensagem de grupo, vai para a próxima.
+                            continue  # próxima mensagem
 
-                        # Se não for uma mensagem de grupo, pode ser uma mensagem privada ou uma chave.
+                        # 2) Envelope JSON: ou distribuição de chave de grupo, ou msg privada
                         try:
-                            # Tenta decodificar o blob como um envelope JSON
                             env = json.loads(base64.b64decode(m["blob"]).decode())
 
-                            # Verifica se é uma distribuição de chave de grupo
+                            # 2a) Distribuição de chave de grupo via Box
                             if env.get("type") == "group_key_distribution":
                                 peer_pub = PublicKey(ub64(env["sender_pub"]))
-                                box = Box(self.priv, peer_pub)
-                                group_key = box.decrypt(ub64(env["key_blob"]))
-                                group_id = env["group_id"]
+                                # >>> Troca: Box -> DebugBox
+                                box = DebugBox(self.priv, peer_pub, label=f"{peer_pub.encode().hex()[:16]} → {self.client_id} (grp-key)")
+                                group_key = box.decrypt(ub64(env["key_blob"]))  # bytes (nonce||ct) → pt
 
+                                group_id = env["group_id"]
                                 if group_id not in self.conversations:
-                                    self.conversations[group_id] = {
-                                        "history": [],
-                                        "type": "group",
-                                    }
+                                    self.conversations[group_id] = {"history": [], "type": "group"}
                                 self.conversations[group_id]["key"] = group_key
 
-                                welcome_msg = (
-                                    f"Você foi adicionado ao grupo '{group_id}'."
-                                )
-                                self.conversations[group_id]["history"].append(
-                                    (ts, "Sistema", welcome_msg)
-                                )
+                                welcome_msg = f"Você foi adicionado ao grupo '{group_id}'."
+                                self.conversations[group_id]["history"].append((ts, "Sistema", welcome_msg))
                                 if self.on_new_message:
-                                    self.on_new_message(
-                                        group_id, f"[{ts}] Sistema: {welcome_msg}"
-                                    )
+                                    self.on_new_message(group_id, f"[{ts}] Sistema: {welcome_msg}")
                                 if self.on_update_ui:
                                     self.on_update_ui()
 
-                            # Senão, assume que é uma mensagem privada normal
+                            # 2b) Mensagem privada
                             else:
                                 peer = m["from"]
                                 if peer not in self.conversations:
-                                    self.conversations[peer] = {
-                                        "history": [],
-                                        "type": "private",
-                                    }
+                                    self.conversations[peer] = {"history": [], "type": "private"}
 
-                                cipher = ub64(env["blob"])
+                                cipher = ub64(env["blob"])                 # bytes = nonce||ct
                                 sender_pub = PublicKey(ub64(env["sender_pub"]))
-                                msg_box = Box(self.priv, sender_pub)
+                                # >>> Troca: Box -> DebugBox
+                                msg_box = DebugBox(self.priv, sender_pub, label=f"{peer} → {self.client_id}")
                                 pt = msg_box.decrypt(cipher).decode()
 
-                                self.conversations[peer]["history"].append(
-                                    (ts, peer, pt)
-                                )
+                                self.conversations[peer]["history"].append((ts, peer, pt))
                                 if self.on_new_message:
                                     self.on_new_message(peer, f"[{ts}] {peer}: {pt}")
 
                         except Exception as e:
-                            print(
-                                f"Erro ao processar blob JSON de {m.get('from')}: {e}"
-                            )
+                            print(f"Erro ao processar blob JSON de {m.get('from')}: {e}")
 
             except Exception as e:
                 print(f"Erro no polling: {e}")
