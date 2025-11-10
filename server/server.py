@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import asyncio
 import builtins
 import contextlib
@@ -25,7 +24,6 @@ ACTIVE_CLIENTS = {}  # client_id -> {reader, writer}
 GROUPS = {}  # group_id -> { "members": [client_id], "admin": client_id }
 
 
-# --- Inicialização do JSON ---
 def init_pubkeys():
     global PUBLIC_KEYS
     log.info("=" * 70)
@@ -49,7 +47,7 @@ def init_pubkeys():
     log.info("=" * 70)
 
 
-# --- Atualiza JSON ao receber nova chave ---
+# atualiza o json ao receber nova chave
 def store_pubkey(client_id, pubkey_b64):
     global PUBLIC_KEYS
     PUBLIC_KEYS[client_id] = pubkey_b64
@@ -79,7 +77,6 @@ async def send_error(writer, reason):
     await writer.drain()
 
 
-# --- Handler de conexões ---
 async def handle_reader(reader, writer):
     addr = writer.get_extra_info("peername")
     client_id = None
@@ -259,7 +256,6 @@ async def handle_reader(reader, writer):
             await writer.wait_closed()
 
 
-# --- Main ---
 async def main(certfile, keyfile, host="0.0.0.0", port=4433):
     log.info("")
     log.info("[server.py][SSL/TLS] Configurando contexto SSL/TLS")
