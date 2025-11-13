@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: chat-seguran-a
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: cryptography>=41.0.0
+Requires-Dist: pynacl>=1.6.0
+Requires-Dist: websockets>=11.0.0
+Requires-Dist: fastapi>=0.104.0
+Requires-Dist: uvicorn[standard]>=0.24.0
+
+# Chat Seguro
+
+Chat seguro para a matéria de Segurança da Informação;
+Inicialmente assegurando o pilar de Confidencialidade, por meio dos algoritmos de cifragem: Salsa20 e ECDH;
+
+# MANUAL DE EXECUÇÃO
+
+Gerar certificados: python server/generate_cert.py
+Para subir o servidor: python server/server.py cert.pem key.pem
+Para subir clientes: python client.py --id user --server localhost:4433 --cacert cert.pem

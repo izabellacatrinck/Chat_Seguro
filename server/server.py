@@ -2,8 +2,8 @@ import asyncio
 import builtins
 import contextlib
 import json
-import ssl
 import logging
+import ssl
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -34,7 +34,10 @@ def init_pubkeys():
         with PUBKEYS_FILE.open("r") as f:
             try:
                 PUBLIC_KEYS = json.load(f)
-                log.info("  └─ ✅ pubkeys.json carregado (%d chaves públicas)", len(PUBLIC_KEYS))
+                log.info(
+                    "  └─ ✅ pubkeys.json carregado (%d chaves públicas)",
+                    len(PUBLIC_KEYS),
+                )
             except Exception as e:
                 log.error("  └─ ❌ Erro ao ler pubkeys.json: %s", e)
                 PUBLIC_KEYS = {}
@@ -127,7 +130,9 @@ async def handle_reader(reader, writer):
                 else:
                     log.info("")
                     log.info("[server.py][PUBKEY_FETCH] Chave pública solicitada")
-                    log.info("  └─ Arquivo: server.py | Função: handle_reader() | Comando: get_key")
+                    log.info(
+                        "  └─ Arquivo: server.py | Função: handle_reader() | Comando: get_key"
+                    )
                     log.info("  └─ Cliente solicitado: %s", cid)
                     log.info("  └─ Tamanho (base64): %d caracteres", len(pub))
                     log.info("  └─ ✅ Chave enviada ao solicitante")
@@ -141,16 +146,26 @@ async def handle_reader(reader, writer):
                 if not to or not frm or not blob:
                     await send_error(writer, "send_blob requer to, from e blob")
                     continue
-                BLOBS.setdefault(to, []).append({"from": frm, "blob": blob, "meta": meta})
+                BLOBS.setdefault(to, []).append(
+                    {"from": frm, "blob": blob, "meta": meta}
+                )
 
                 log.info("")
-                log.info("[server.py][TRANSPORTE][MSG_PRIVADA] Mensagem criptografada em trânsito")
-                log.info("  └─ Arquivo: server.py | Função: handle_reader() | Comando: send_blob")
+                log.info(
+                    "[server.py][TRANSPORTE][MSG_PRIVADA] Mensagem criptografada em trânsito"
+                )
+                log.info(
+                    "  └─ Arquivo: server.py | Função: handle_reader() | Comando: send_blob"
+                )
                 log.info("  └─ Remetente: %s", frm)
                 log.info("  └─ Destinatário: %s", to)
                 log.info("  └─ Tamanho do blob (base64): %d caracteres", len(blob))
-                log.info("  └─ ⚠️  IMPORTANTE: Servidor NÃO decripta. Apenas transporta!")
-                log.info("  └─ Criptografia aplicada: NaCl Box (X25519 + XSalsa20-Poly1305)")
+                log.info(
+                    "  └─ ⚠️  IMPORTANTE: Servidor NÃO decripta. Apenas transporta!"
+                )
+                log.info(
+                    "  └─ Criptografia aplicada: NaCl Box (X25519 + XSalsa20-Poly1305)"
+                )
                 log.info("  └─ Autenticação: Poly1305 MAC (16 bytes)")
                 log.info("  └─ A descriptografia ocorre no cliente destino")
 
@@ -161,7 +176,9 @@ async def handle_reader(reader, writer):
                 members = msg.get("members")
                 admin = msg.get("admin")
                 if not group_id or not members or not admin:
-                    await send_error(writer, "create_group requer group_id, members e admin")
+                    await send_error(
+                        writer, "create_group requer group_id, members e admin"
+                    )
                     continue
                 if group_id in GROUPS:
                     await send_error(writer, "grupo já existe")
@@ -171,7 +188,9 @@ async def handle_reader(reader, writer):
 
                 log.info("")
                 log.info("[server.py][GRUPO][CREATE] Novo grupo criado")
-                log.info("  └─ Arquivo: server.py | Função: handle_reader() | Comando: create_group")
+                log.info(
+                    "  └─ Arquivo: server.py | Função: handle_reader() | Comando: create_group"
+                )
                 log.info("  └─ ID do grupo: %s", group_id)
                 log.info("  └─ Administrador: %s", admin)
                 log.info("  └─ Membros: %s", ", ".join(members))
@@ -184,7 +203,9 @@ async def handle_reader(reader, writer):
                 frm = msg.get("from")
                 blob = msg.get("blob")
                 if not group_id or not frm or not blob:
-                    await send_error(writer, "send_group_blob requer group_id, from e blob")
+                    await send_error(
+                        writer, "send_group_blob requer group_id, from e blob"
+                    )
                     continue
                 if group_id not in GROUPS:
                     await send_error(writer, "grupo não encontrado")
@@ -196,14 +217,20 @@ async def handle_reader(reader, writer):
                     continue
 
                 log.info("")
-                log.info("[server.py][TRANSPORTE][MSG_GRUPO] Mensagem de grupo em trânsito")
-                log.info("  └─ Arquivo: server.py | Função: handle_reader() | Comando: send_group_blob")
+                log.info(
+                    "[server.py][TRANSPORTE][MSG_GRUPO] Mensagem de grupo em trânsito"
+                )
+                log.info(
+                    "  └─ Arquivo: server.py | Função: handle_reader() | Comando: send_group_blob"
+                )
                 log.info("  └─ Remetente: %s", frm)
                 log.info("  └─ Grupo: %s", group_id)
                 log.info("  └─ Tamanho do blob (base64): %d caracteres", len(blob))
                 log.info("  └─ Destinatários: %d membros", len(group["members"]) - 1)
                 log.info("  └─ ⚠️  IMPORTANTE: Servidor NÃO decripta. Apenas distribui!")
-                log.info("  └─ Criptografia aplicada: NaCl SecretBox (XSalsa20-Poly1305)")
+                log.info(
+                    "  └─ Criptografia aplicada: NaCl SecretBox (XSalsa20-Poly1305)"
+                )
                 log.info("  └─ Chave simétrica: Compartilhada entre membros do grupo")
                 log.info("  └─ Autenticação: Poly1305 MAC (16 bytes)")
 
@@ -211,7 +238,12 @@ async def handle_reader(reader, writer):
                 for member in group["members"]:
                     if member != frm:
                         BLOBS.setdefault(member, []).append(
-                            {"from": frm, "blob": blob, "group_id": group_id, "type": "group"}
+                            {
+                                "from": frm,
+                                "blob": blob,
+                                "group_id": group_id,
+                                "type": "group",
+                            }
                         )
                 await send_ok(writer, {"message": "stored for group"})
 
@@ -225,7 +257,9 @@ async def handle_reader(reader, writer):
                 if items:
                     log.info("")
                     log.info("[server.py][FETCH] Mensagens pendentes entregues")
-                    log.info("  └─ Arquivo: server.py | Função: handle_reader() | Comando: fetch_blobs")
+                    log.info(
+                        "  └─ Arquivo: server.py | Função: handle_reader() | Comando: fetch_blobs"
+                    )
                     log.info("  └─ Cliente: %s", cid)
                     log.info("  └─ Quantidade de mensagens: %d", len(items))
 
